@@ -1,0 +1,15 @@
+{
+    "pythonVersion": "3.7",
+    "pythonPlatform": "Linux",
+    "typeCheckingMode": "strict",
+    "useLibraryCodeForTypes": true,
+    "reportWildcardImportFromLibrary": "none",
+    "reportMissingTypeStubs": "warning",
+    "reportUnusedImport": "warning",
+    "reportUnusedVariable": "warning",
+    "reportUnusedClass": "none",
+    "reportUnusedFunction": "none",
+    "reportPrivateUsage": "warning",
+    "reportConstantRedefinition": "none",
+    "reportUnknownLambdaType": "warning"
+}
