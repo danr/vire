@@ -25,6 +25,7 @@ def spawn(f: Callable[[], None]) -> None:
 def sigterm(pid: int):
     try:
         os.kill(pid, signal.SIGTERM)
+        os.waitpid(pid, 0)
     except ProcessLookupError:
         pass
 
@@ -51,15 +52,37 @@ def run_child(argv: list[str], is_module: bool, clear_opt: int):
     else:
         runpy.run_path(argv[0], run_name='__main__')
 
-def main_inner(preload: str, argv: list[str], is_module: bool, glob_pattern: str, clear_opt: int=0):
+def main_inner(
+    preload: str,
+    argv: list[str],
+    is_module: bool,
+    glob_patterns: str,
+    clear_opt: int=0,
+    restore: Callable[[], None]=lambda: None
+):
     for name in preload.split(','):
         name = name.strip()
         if name:
             importlib.import_module(name)
+    imported_at_preload: set[str] = {
+        file
+        for _, m in sys.modules.items()
+        for file in [getattr(m, '__file__', None)]
+        if file
+        if not file.startswith('/usr')
+    }
+    wd_to_filename: dict[int, str] = {}
     ino: Any = INotify()
-    for name in Path('.').glob(glob_pattern):
-        ino.add_watch(name, flags.MODIFY)
-    q: Queue[Union[list[Any], str]] = Queue()
+    def add_watch(filename: str | Path):
+        wd = ino.add_watch(filename, flags.MODIFY)
+        wd_to_filename[wd] = str(Path(filename).resolve())
+    for name in imported_at_preload:
+        add_watch(name)
+    for glob_pattern in glob_patterns.split(','):
+        for name in Path('.').glob(glob_pattern.strip()):
+            add_watch(name)
+    out_of_sync: set[str] = set()
+    q: Queue[Union[set[str], str]] = Queue()
     @spawn
     def bg_getchar():
         while True:
@@ -67,42 +90,52 @@ def main_inner(preload: str, argv: list[str], is_module: bool, glob_pattern: str
             q.put_nowait(c)
     @spawn
     def bg_read_events():
+        nonlocal out_of_sync
         while True:
-            q.put(ino.read(read_delay=1))
+            events = ino.read(read_delay=1)
+            files = {wd_to_filename[e.wd] for e in events}
+            out_of_sync |= files & imported_at_preload
+            q.put(files - imported_at_preload)
     while True:
         pid = fork(lambda: run_child(argv, is_module=is_module, clear_opt=clear_opt))
-        try:
-            msg = q.get()
-        except KeyboardInterrupt:
-            msg = 'q'
+        out_of_sync_reported: set[str] = set()
+        while True:
+            if out_of_sync != out_of_sync_reported:
+                print('vire: Preloaded files have been modified:')
+                print(*['        ' + f for f in out_of_sync], sep='\n')
+                print('      Press R for full reload.')
+                out_of_sync_reported = set(out_of_sync)
+            try:
+                msg = q.get()
+            except KeyboardInterrupt:
+                msg = 'q'
+            if msg == 'q':
+                sigterm(pid)
+                sys.exit()
+            if msg == 'R':
+                sigterm(pid)
+                clear(1)
+                restore()
+                os.execve(sys.argv[0], sys.argv, os.environ)
+            if msg == 'c':
+                clear(1)
+                break
+            if msg == 'C':
+                clear(2)
+                break
+            if msg == ' ' or msg == 'r':
+                break
+            if isinstance(msg, set) and msg:
+                break
         sigterm(pid)
-        if msg == 'q':
-            sys.exit()
 
 def fork(child: Callable[[], None]):
-    pid, master_fd = pty.fork()
+    pid = os.fork()
 
     if pid == 0:
+        os.dup2(os.open('/dev/null', os.O_RDONLY), STDIN_FILENO)
         child()
         quit()
-
-    @spawn
-    def bg():
-        # Copy pty master -> standard output   (master_read)
-        while True:
-            # Some OSes signal EOF by returning an empty byte string,
-            # some throw OSErrors.
-            try:
-                data = os.read(master_fd, 1024)
-            except OSError:
-                data = b""
-            if not data:  # Reached EOF.
-                return    # Assume the child process has exited and is
-                          # unreachable, so we clean up.
-            else:
-                os.write(STDOUT_FILENO, data)
-        os.close(master_fd)
-        os.waitpid(pid, 0)[1]
 
     return pid
 
@@ -126,17 +159,19 @@ def main():
         quit()
 
     mode = termios.tcgetattr(STDIN_FILENO)
+    restore = lambda: termios.tcsetattr(STDIN_FILENO, termios.TCSAFLUSH, mode)
     try:
         tty.setcbreak(STDIN_FILENO) # required for returning single characters from standard input
         main_inner(
             args.preload or '',
             args.argv,
             is_module=args.m,
-            glob_pattern=args.glob,
+            glob_patterns=args.glob,
             clear_opt=args.clear,
+            restore=restore,
         )
     finally:
-        termios.tcsetattr(STDIN_FILENO, termios.TCSAFLUSH, mode)
+        restore()
 
 if __name__ == '__main__':
     main()
