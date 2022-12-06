@@ -1,11 +1,16 @@
-# vire: viable reloader
+# 🔁 vire: viable reloader
 
 Reruns your python program when source files changes, with the possibility to preload libraries.
 
     $ vire -h
     usage: vire [--clear] [--preload M] [--glob G] [--silent] [--auto-full-reload] [-m] ...
 
-Options:
+
+### Installation:
+
+    pip install git+https://github.com/danr/vire.git
+
+### Options:
 
     --clear, -c              Clear the screen before invoking the utility.
                              Specify twice to erase the scrollback buffer.
@@ -15,7 +20,7 @@ Options:
     --auto-full-reload, -r   Automatically do full reload on modifications to preloaded modules.
     -m                       Argument is a module, will be run like python -m (using runpy)
 
-Keybindings:
+### Keybindings:
 
 <table>
 <tr><td><tt>r, &lt;space>  <td>reload
