@@ -43,10 +43,9 @@ def clear(clear_opt: int):
     if clear_opt >= 2:
         print('\033[2J\033[3J\033[H', end='', flush=True)
 
-def run_child(argv: list[str], is_module: bool, clear_opt: int):
+def run_child(argv: list[str], is_module: bool):
     sys.dont_write_bytecode = True
     sys.argv[1:] = argv[1:]
-    clear(clear_opt)
     if is_module:
         runpy.run_module(argv[0], run_name='__main__')
     else:
@@ -58,6 +57,8 @@ def main_inner(
     is_module: bool,
     glob_patterns: str,
     clear_opt: int=0,
+    silent: bool=False,
+    auto_full_reload: bool=False,
     restore: Callable[[], None]=lambda: None
 ):
     for name in preload.split(','):
@@ -97,24 +98,30 @@ def main_inner(
             out_of_sync |= files & imported_at_preload
             q.put(files - imported_at_preload)
     while True:
-        pid = fork(lambda: run_child(argv, is_module=is_module, clear_opt=clear_opt))
+        clear(clear_opt)
+        pid = fork(lambda: run_child(argv, is_module=is_module))
         out_of_sync_reported: set[str] = set()
         while True:
-            if out_of_sync != out_of_sync_reported:
-                print('vire: Preloaded files have been modified:')
-                print(*['        ' + f for f in out_of_sync], sep='\n')
-                print('      Press R for full reload.')
+            if not silent and out_of_sync != out_of_sync_reported:
+                print('vire: Preloaded files have been modified:', file=sys.stderr)
+                print(*['        ' + f for f in out_of_sync], sep='\n', file=sys.stderr)
+                print('      Press R for full reload.', file=sys.stderr)
                 out_of_sync_reported = set(out_of_sync)
             try:
                 msg = q.get()
             except KeyboardInterrupt:
                 msg = 'q'
+            if auto_full_reload and out_of_sync:
+                print('vire: Preloaded files have been modified:', file=sys.stderr)
+                print(*['        ' + f for f in out_of_sync], sep='\n', file=sys.stderr)
+                print('      Running full reload.', file=sys.stderr)
+                msg = 'R-auto'
             if msg == 'q':
                 sigterm(pid)
                 sys.exit()
-            if msg == 'R':
+            if msg == 'R' or msg == 'R-auto':
                 sigterm(pid)
-                clear(1)
+                clear(1 if msg == 'R' else clear_opt)
                 restore()
                 os.execve(sys.argv[0], sys.argv, os.environ)
             if msg == 'c':
@@ -150,6 +157,8 @@ def main():
     parser.add_argument('--clear', '-c', action='count', default=0, help='Clear the screen before invoking the utility. Specify twice to erase the scrollback buffer.')
     parser.add_argument('--preload', '-p', metavar='M', help='Modules to preload, comma-separated. Example: flask,pandas')
     parser.add_argument('--glob', '-g', metavar='G', help='Watch for updates to files matching this glob, Default: **/*.py', default='**/*.py')
+    parser.add_argument('--silent', '-s', action='store_true', help='Silence warning about modifications to preloaded modules.')
+    parser.add_argument('--auto-full-reload', '-r', action='store_true', help='Automatically do full reload on modifications to preloaded modules.')
     parser.add_argument('-m', action='store_true', help='Argument is a module, will be run like python -m (using runpy)')
     parser.add_argument(dest='argv', nargs=argparse.REMAINDER)
     args = parser.parse_args()
@@ -168,6 +177,8 @@ def main():
             is_module=args.m,
             glob_patterns=args.glob,
             clear_opt=args.clear,
+            silent=args.silent,
+            auto_full_reload=args.auto_full_reload,
             restore=restore,
         )
     finally:
