@@ -142,6 +142,8 @@ class Vire:
                     sigterm(pid)
                     clear(1 if msg == 'R' else self.clear_opt)
                     self._restore()
+                    max_fd = os.sysconf("SC_OPEN_MAX")
+                    os.closerange(3, max_fd)
                     os.execve(sys.argv[0], sys.argv, os.environ)
                 if msg == 'c':
                     clear(1)
