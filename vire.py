@@ -14,6 +14,7 @@ import termios
 import threading
 import tty
 import traceback
+import time
 
 from inotify_simple import INotify, flags # type: ignore
 
@@ -26,7 +27,16 @@ def spawn(f: Callable[[], None]) -> None:
 def sigterm(pid: int):
     try:
         os.kill(pid, signal.SIGTERM)
+        relevant = True
+        @spawn
+        def _():
+            time.sleep(5)
+            if relevant:
+                print('waited for 5s, now sending SIGKILL...')
+                os.kill(pid, signal.SIGKILL)
+        # print('wait')
         os.waitpid(pid, 0)
+        relevant = False
     except ProcessLookupError:
         pass
 
@@ -47,7 +57,10 @@ def run_child(argv: list[str], is_module: bool):
         if is_module:
             runpy.run_module(argv[0], run_name='__main__')
         else:
+            sys.path = [str(Path(argv[0]).parent), *sys.path]
             runpy.run_path(argv[0], run_name='__main__')
+    except SystemExit:
+        pass
     except:
         traceback.print_exc()
 
@@ -63,13 +76,16 @@ class Vire:
     _restore:         Callable[[], None] = lambda: None
 
     def main(self):
-        mode = termios.tcgetattr(STDIN_FILENO)
-        self._restore = lambda: termios.tcsetattr(STDIN_FILENO, termios.TCSAFLUSH, mode)
-        try:
-            tty.setcbreak(STDIN_FILENO) # required for returning single characters from standard input
+        if not sys.stdin.isatty():
             self._main()
-        finally:
-            self._restore()
+        else:
+            mode = termios.tcgetattr(STDIN_FILENO)
+            self._restore = lambda: termios.tcsetattr(STDIN_FILENO, termios.TCSAFLUSH, mode)
+            try:
+                tty.setcbreak(STDIN_FILENO) # required for returning single characters from standard input
+                self._main()
+            finally:
+                self._restore()
 
     def getchar(self):
         # requires tty.setcbreak
