@@ -30,7 +30,7 @@ def sigterm(pid: int):
         relevant = True
         @spawn
         def _():
-            time.sleep(5)
+            time.sleep(1)
             if relevant:
                 print('waited for 5s, now sending SIGKILL...')
                 os.kill(pid, signal.SIGKILL)
@@ -73,6 +73,7 @@ class Vire:
     clear_opt:        int = 0
     silent:           bool = False
     auto_full_reload: bool = False
+    preload_exclude:  Iterable[str] = ()
     _restore:         Callable[[], None] = lambda: None
 
     def main(self):
@@ -92,6 +93,8 @@ class Vire:
         return sys.stdin.read(1)
 
     def _main(self):
+        sys_argv_copy = [*sys.argv]
+        # print(f'{sys.executable=} {sys_argv_copy=}')
         for name in self.preload.split(','):
             name = name.strip()
             if name:
@@ -106,6 +109,7 @@ class Vire:
             if file
             if not file.startswith('/usr')
         }
+        imported_at_preload = imported_at_preload - {*self.preload_exclude}
         wd_to_filename: dict[int, str] = {}
         ino: Any = INotify()
         def add_watch(filename: str | Path):
@@ -160,7 +164,12 @@ class Vire:
                     self._restore()
                     max_fd = os.sysconf("SC_OPEN_MAX")
                     os.closerange(3, max_fd)
-                    os.execve(sys.argv[0], sys.argv, os.environ)
+                    sys.argv[:] = sys_argv_copy
+                    if os.access(sys.argv[0], os.X_OK):
+                        os.execve(sys.argv[0], sys.argv, os.environ)
+                    else:
+                        sys.argv[:] = [sys.executable, *sys_argv_copy]
+                        os.execve(sys.argv[0], sys.argv, os.environ)
                 if msg == 'c':
                     clear(1)
                     break
@@ -179,11 +188,36 @@ def fork(child: Callable[[], None]):
     if pid == 0:
         os.dup2(os.open('/dev/null', os.O_RDONLY), STDIN_FILENO)
         child()
-        quit()
 
     return pid
 
+_is_reloading: bool = False
+_is_running_from_command_line_tool: bool = False
+
+def reload(filepath: str, *, glob: str='**/*.py', auto_full_reload: bool=False, clear: int=1):
+    global _is_reloading
+    if _is_running_from_command_line_tool:
+        raise ValueError('Not a good idea to run both vire.reload and the vire command line tool')
+    # print(f'{_is_reloading=}\n{sys.argv=}')
+    if _is_reloading:
+        return
+    else:
+        _is_reloading = True
+        Vire(
+            preload          = '',
+            argv             = [*sys.argv],
+            is_module        = False,
+            glob_patterns    = glob,
+            clear_opt        = clear,
+            silent           = False,
+            auto_full_reload = auto_full_reload,
+            preload_exclude  = (filepath,)
+        ).main()
+
 def main():
+    global _is_running_from_command_line_tool
+    _is_running_from_command_line_tool = True
+
     parser = argparse.ArgumentParser(
         description='''
             Runs a program and reruns it on updating files matching a glob (default **/*.py).
